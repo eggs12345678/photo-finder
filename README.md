@@ -22,6 +22,7 @@ every query.
 | Vector search | FAISS `IndexFlatIP` (exact cosine, id-mapped) |
 | Metadata + durability | SQLite (paths, EXIF dates, every vector, thumbnails index) |
 | Video moments | ffmpeg frame sampling + near-duplicate dropping + timestamps |
+| Screenshot text (optional) | Windows OCR (`winsdk`), RapidOCR or Tesseract → SQLite FTS5 |
 | API | Python 3.11, FastAPI, Uvicorn |
 | UI | React 19, TypeScript, Vite (no UI framework) |
 
@@ -34,6 +35,10 @@ Requirements: [uv](https://docs.astral.sh/uv/), Node 20+, and `ffmpeg` +
 # 1. backend dependencies (Python 3.11)
 cd server
 uv sync --python 3.11
+
+# optional: find screenshots by the words on screen
+uv sync --python 3.11 --extra ocr-windows   # Windows: uses the built-in OCR engine
+# or: uv sync --python 3.11 --extra ocr     # RapidOCR (any OS, downloads ONNX models)
 
 # 2. build the web UI once
 cd ..\web
@@ -116,16 +121,22 @@ Use the drawer's **Rebuild** (or `index --full`) after changing
 2. FAISS returns the top candidates by cosine similarity. The search
    over-fetches 12× the requested result count so that grouping many frames of
    the same video still fills the page.
-3. Candidates are grouped by file: one card per photo/clip, with up to four
+3. If OCR text exists, the query words are also looked up in the full-text
+   index. A file scores `max(CLIP, 0.4 × word coverage)`, so a literal match
+   (a name, a title, an error message) is found even when the picture looks
+   like nothing in particular, while conceptual queries keep their CLIP order.
+   Text-only hits outside the FAISS candidates are added to the pool.
+4. Candidates are grouped by file: one card per photo/clip, with up to four
    matching timestamps for videos.
-4. Each query is calibrated against a random sample of the library: a result is
+5. Each query is calibrated against a random sample of the library: a result is
    **strong** when its similarity is at least `PHOTOFINDER_STRICT_Z` standard
-   deviations above the library's typical similarity for that query. Weak
-   matches are hidden by default; if nothing is strong, the three closest
-   guesses are shown with a warning.
-5. The response includes `strong_count`, `weak_count`, `weak_only`, `cutoff`,
-   and a timing breakdown (`embed`, `faiss`, `calibrate`, `db`, `group`) which
-   the UI exposes in the latency pill.
+   deviations above the library's typical similarity for that query, or when at
+   least `PHOTOFINDER_OCR_STRONG_COVERAGE` of the query words appear in its
+   text. Weak matches are hidden by default; if nothing is strong, the three
+   closest guesses are shown with a warning.
+6. The response includes `strong_count`, `weak_count`, `weak_only`, `cutoff`,
+   `text_matches`, and a timing breakdown (`embed`, `faiss`, `calibrate`,
+   `db`, `lexical`, `group`) which the UI exposes in the latency pill.
 
 ### Precision
 
@@ -144,13 +155,28 @@ weights; none beat squash + ensemble consistently enough to justify their cost.
 The z-score gate keeps about 70% of relevant results while dropping about 84%
 of the library.
 
-Re-run `index --full` after changing preprocessing settings; the app also does
-this automatically when the fingerprint changes.
+**Text search** was measured separately on the same 80 screenshots, with
+queries made from strings that actually appear in the images (`AP Biology`,
+`beabadoobee concerts`, `WMZH radio station`, …):
+
+| Setup | MRR | Recall@10 |
+| --- | --- | --- |
+| CLIP only | 0.40 | 0.45 |
+| **CLIP + OCR (`max(CLIP, 0.4 × coverage)`)** | **1.00** | **1.00** |
+
+Conceptual queries were unchanged at MRR 0.68 on both tuning and held-out
+sets. Frequencies are scored with IDF so a query made of common words cannot
+look like a text match.
+
+Re-run `index --full` after changing preprocessing or enabling OCR for the
+first time; the app also re-OCRs images automatically when OCR becomes
+available.
 
 On this machine, with 53 test moments: **p50 1.45 ms, p95 25 ms** across 40
 queries (the p95 comes from the first, uncached text encoding of each query).
 A cached query is roughly `1–3 ms`. Flat FAISS search is a few milliseconds at
-100k vectors and still practical at a million.
+100k vectors and still practical at a million. The OCR lookup adds well under a
+millisecond.
 
 ## Using the UI
 
@@ -166,7 +192,8 @@ A cached query is roughly `1–3 ms`. Flat FAISS search is a few milliseconds at
   shows live indexing progress, rescan/rebuild, and removes folders from the
   index without deleting files.
 - Search shows strong matches only. **Show all** includes weak ones (dimmed);
-  **Strong only** hides them again. A new query always starts strict.
+  **Strong only** hides them again. A new query always starts strict. A small
+  **text** badge marks images whose on-screen text matched the query.
 - Indexing runs in the background; search stays available.
 
 ## Configuration
@@ -186,6 +213,11 @@ Environment variables, read by the server and CLI:
 | `PHOTOFINDER_SQUASH` | `1` | Keep the full frame when resizing (0 = CLIP centre crop) |
 | `PHOTOFINDER_STRICT_Z` | `1.0` | Standard deviations above library average to count as strong |
 | `PHOTOFINDER_CALIBRATION_SAMPLES` | `2048` | Library vectors sampled per query for the cutoff |
+| `PHOTOFINDER_OCR` | `auto` | `auto`, `off`, or `windows` / `rapidocr` / `tesseract` |
+| `PHOTOFINDER_OCR_LANG` | `en-US` | OCR language; Windows needs that language pack installed |
+| `PHOTOFINDER_OCR_MAX_SIDE` | `2600` | Downscale before OCR (larger is slower, smaller loses small text) |
+| `PHOTOFINDER_OCR_BOOST` | `0.4` | Similarity a full text match earns (`max(CLIP, boost × coverage)`) |
+| `PHOTOFINDER_OCR_STRONG_COVERAGE` | `0.8` | Share of query words that makes a text match strong |
 | `PHOTOFINDER_FFMPEG` / `PHOTOFINDER_FFPROBE` | `ffmpeg` / `ffprobe` | Binary paths |
 
 Higher quality / slower alternative:
@@ -224,7 +256,7 @@ The API is local and unauthenticated by design (bind it to `127.0.0.1` only).
 | `GET /api/search?q=…&limit=60&kind=image\|video&all=false` | semantic search with timings and strong/weak counts |
 | `GET /api/recent?limit=42&kind=…` | recently indexed media |
 | `GET /api/stats` | counts, roots, vectors, size |
-| `GET /api/health` | boot state, model, vector count |
+| `GET /api/health` | boot state, model, vector count, OCR engine and text count |
 | `GET /api/status` | indexing progress |
 | `POST /api/index` `{ "path": "...", "full": false }` | add/refresh a folder or file |
 | `POST /api/rescan?full=false` | rescan every root |
@@ -255,8 +287,13 @@ folder are skipped.
 ## Limits and good to know
 
 - CLIP is good at objects, scenes, colours, actions and vibes; it is not OCR or
-  a face-recognition system. Text in screenshots is hit-or-miss, and people are
-  described rather than identified.
+  a face-recognition system. People are described rather than identified.
+- OCR is optional and covers photos/screenshots, not video frames yet. It reads
+  the built-in Windows engine (or RapidOCR/Tesseract); accuracy depends on
+  resolution, fonts and language. Enabling it later re-OCRs images on the next
+  scan without re-embedding them.
+- OCR costs roughly 15–60 ms per screenshot on a modern desktop. A 7,000-image
+  screenshot library adds a few minutes to the first full scan, not to searches.
 - Queries work best in English (the default model was trained on English
   captions). Shorter, concrete descriptions outperform long stories.
 - Video moments have the granularity of the sampling interval (2 s by default).
@@ -285,6 +322,10 @@ This project does not grant you a licence to the models or media you index.
 - Code licences: `open_clip` MIT, PyTorch BSD-3, FAISS MIT, FastAPI MIT,
   Pillow HPND, React MIT, Vite MIT. ffmpeg is a separate system dependency;
   its build/licence depends on how it was compiled (LGPL/GPL).
+- Optional OCR: `winsdk` is MIT and calls the OCR engine included with Windows;
+  `rapidocr-onnxruntime` is Apache-2.0 and bundles PP-OCR ONNX models (also
+  Apache-2.0 at the time of writing); Tesseract is Apache-2.0. Check the model
+  and language-pack terms before commercial use.
 
 CLIP can reproduce biases present in its training data. Do not use it for
 surveillance or identity decisions.
@@ -301,7 +342,8 @@ server/
     db.py         SQLite schema and queries
     embedder.py   CLIP image + text embeddings
     index.py      FAISS wrapper (add, remove, search, rebuild, atomic save)
-    ingest.py     scanner, EXIF, thumbnails, video sampling, progress
+    ingest.py     scanner, EXIF, thumbnails, OCR, video sampling, progress
+    ocr.py        optional Windows / RapidOCR / Tesseract text extraction
     search.py     query → confidence-gated, grouped results with timings
 web/
   src/
