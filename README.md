@@ -9,9 +9,9 @@ FAISS index. The React UI is keyboard-first and shows the measured latency of
 every query.
 
 ```
-"a dog jumping into the sea"      → photo, 12 ms
-"the whiteboard from sprint planning" → photo, 2 ms (cached query)
-"that bit where the rocket lands"  → clip at 0:42, 14 ms
+"a dog jumping into the sea"      → photo, ~120 ms
+"the whiteboard from sprint planning" → photo, ~30 ms (repeated query)
+"that bit where the rocket lands"  → clip at 0:42, ~150 ms
 ```
 
 ## What is in the box
@@ -26,7 +26,34 @@ every query.
 | API | Python 3.11, FastAPI, Uvicorn |
 | UI | React 19, TypeScript, Vite (no UI framework) |
 
-## Quick start (Windows)
+## Install (Windows, no Python needed)
+
+Build the installer once, then run the setup:
+
+```powershell
+# from the repository root (needs uv, Node 20+, Inno Setup 6)
+.\installer\build.ps1
+.\installer\dist\PhotoFinder-0.2.0-setup.exe
+```
+
+It installs for the current user only, with a bundled Python runtime, all
+dependencies and the built UI — no admin prompt and no separate Python install.
+Start Menu shortcuts: **Photo Finder**, **Photo Finder data folder**, **Stop
+Photo Finder**, **Uninstall Photo Finder**.
+
+Clicking **Photo Finder** starts the API hidden, opens the browser and shows a
+tray icon (Open / Open data folder / Quit). The library lives in
+`%LOCALAPPDATA%\PhotoFinder\data`; upgrades and uninstalling keep it. The first
+launch downloads the CLIP weights (~350 MB) once. `Photo Finder.exe stop` closes
+the server from a shortcut or terminal.
+
+`ffmpeg`/`ffprobe` are not bundled (they are only needed for videos). Put them
+on `PATH` or set `PHOTOFINDER_FFMPEG` / `PHOTOFINDER_FFPROBE`.
+
+See [`installer/README.md`](installer/README.md) for build switches, the
+installed layout and silent-install commands.
+
+## Quick start (from source)
 
 Requirements: [uv](https://docs.astral.sh/uv/), Node 20+, and `ffmpeg` +
 `ffprobe` on `PATH`.
@@ -172,11 +199,12 @@ Re-run `index --full` after changing preprocessing or enabling OCR for the
 first time; the app also re-OCRs images automatically when OCR becomes
 available.
 
-On this machine, with 53 test moments: **p50 1.45 ms, p95 25 ms** across 40
-queries (the p95 comes from the first, uncached text encoding of each query).
-A cached query is roughly `1–3 ms`. Flat FAISS search is a few milliseconds at
-100k vectors and still practical at a million. The OCR lookup adds well under a
-millisecond.
+On this machine, with a 7,660-screenshot library: **about 0.1 s per new query**
+(95–180 ms), **about 30 ms when the same query is repeated** (the encoded query
+is cached), and the first query after a cold start also builds the confidence
+sample (~0.2–0.4 s). FAISS itself takes 1–7 ms. Flat FAISS search is a few
+milliseconds at 100k vectors and still practical at a million. The OCR lookup
+adds a few milliseconds.
 
 ## Using the UI
 
@@ -202,7 +230,9 @@ Environment variables, read by the server and CLI:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `PHOTOFINDER_DATA` | `server/data` | SQLite DB, FAISS index, thumbnails |
+| `PHOTOFINDER_DATA` | `server/data` (installed app: `%LOCALAPPDATA%\PhotoFinder\data`) | SQLite DB, FAISS index, thumbnails |
+| `PHOTOFINDER_PORT` | `8642` | Port used by `desktop` / `stop` when `--port` is omitted |
+| `PHOTOFINDER_NO_BROWSER` | unset | Set to `1` to stop the desktop shell opening a browser |
 | `PHOTOFINDER_MODEL` | `ViT-B-32` | Any `open_clip` architecture |
 | `PHOTOFINDER_PRETRAINED` | `laion2b_s34b_b79k` | Weights tag for that architecture |
 | `PHOTOFINDER_DEVICE` | `cpu` | `cuda` if you installed a CUDA PyTorch build |
@@ -242,6 +272,8 @@ uv run python -m photofinder search "terminal with white text" --all   # include
 uv run python -m photofinder bench                          # latency percentiles
 uv run python -m photofinder stats
 uv run python -m photofinder serve --host 127.0.0.1 --port 8642
+uv run python -m photofinder desktop --port 8642   # hidden server + browser + tray
+uv run python -m photofinder stop                  # stop the desktop server
 ```
 
 `index` prints progress and a summary; `stats` shows counts and roots; `bench`
@@ -271,7 +303,8 @@ Interactive docs: <http://127.0.0.1:8642/docs>.
 ## Supported files
 
 Photos: `jpg jpeg png webp bmp gif tif tiff heic heif avif` (HEIC/AVIF through
-`pillow-heif`). Videos: `mp4 mov m4v mkv webm avi wmv mpg mpeg`.
+`pillow-heif`). Videos: `mp4 mov m4v mkv webm avi wmv mpg mpeg` (needs
+`ffmpeg`/`ffprobe` on `PATH`; the installer does not bundle them).
 
 Hidden folders, `.git`, `node_modules`, recycle bins and the app's own data
 folder are skipped.
@@ -281,8 +314,9 @@ folder are skipped.
 - No network calls at search or index time; everything is local. The only
   network use is the one-time model download from Hugging Face.
 - No analytics, no cloud, no image uploads. Phones are not involved.
-- `.gitignore` excludes `server/data/`, so the SQLite database, embeddings and
-  thumbnails do not end up in git.
+- `.gitignore` excludes `server/data/` and the installer's `build`/`dist`
+  folders, so the SQLite database, embeddings, thumbnails and setup files do not
+  end up in git.
 
 ## Limits and good to know
 
@@ -352,9 +386,16 @@ web/
     components/Lightbox.tsx
     components/LibraryPanel.tsx
     styles.css
+installer/
+  run.py          installed entry point (sets %LOCALAPPDATA%\PhotoFinder\data)
+  Launcher.cs     windowless PhotoFinder.exe
+  make_icon.py    multi-size .ico generator
+  photofinder.iss Inno Setup script
+  build.ps1       one-command installer build
 ```
 
-Data directory (`server/data/`):
+Data directory (`server/data/`; `%LOCALAPPDATA%\PhotoFinder\data` for the
+installed app):
 
 ```
 library.db     metadata + every embedding (source of truth)
