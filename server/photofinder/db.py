@@ -271,10 +271,13 @@ def items_with_media(ids: list[int]) -> dict[int, sqlite3.Row]:
         return {}
     conn = connect()
     marks = ",".join("?" * len(ids))
+    # CROSS JOIN pins the loop order: item ids first, then media by primary
+    # key. With a plain JOIN and a few hundred ids SQLite flips to scanning
+    # idx_media_status and checking every ready row (125 ms vs 0.3 ms here).
     rows = conn.execute(
         "SELECT i.id AS item_id, i.t, i.thumb, m.id AS media_id, m.path, m.kind, "
         "m.width, m.height, m.duration, m.taken_at, m.mtime, m.ocr_text "
-        f"FROM items i JOIN media m ON m.id=i.media_id "
+        "FROM items i CROSS JOIN media m ON m.id=i.media_id "
         f"WHERE i.id IN ({marks}) AND m.status='ready'",
         ids,
     ).fetchall()
@@ -286,15 +289,12 @@ def first_items_for_media(media_ids: list[int]) -> dict[int, sqlite3.Row]:
     if not media_ids:
         return {}
     marks = ",".join("?" * len(media_ids))
-    rows = connect().execute(
-        "SELECT i.id AS item_id, i.t, i.thumb, m.id AS media_id, m.path, m.kind, "
-        "m.width, m.height, m.duration, m.taken_at, m.mtime, m.ocr_text "
-        "FROM items i JOIN media m ON m.id=i.media_id "
-        f"WHERE i.id IN (SELECT MIN(id) FROM items WHERE media_id IN ({marks}) GROUP BY media_id) "
-        "AND m.status='ready'",
+    picked = connect().execute(
+        f"SELECT MIN(id) AS item_id FROM items WHERE media_id IN ({marks}) GROUP BY media_id",
         media_ids,
     ).fetchall()
-    return {int(r["media_id"]): r for r in rows}
+    rows = items_with_media([int(r["item_id"]) for r in picked])
+    return {int(r["media_id"]): r for r in rows.values()}
 
 
 # --- OCR text ---------------------------------------------------------------

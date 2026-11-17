@@ -180,13 +180,15 @@ def search(
 
     # Text-only matches may not be in the CLIP candidates at all (a name, a
     # title, an error message); fetch their representative item and add them.
-    missing = [
-        media_id
-        for media_id in coverage
-        if media_id not in by_media
-    ]
+    # Common words can match thousands of screenshots, so only the strongest
+    # text hits are added (and they still have to earn their place by score).
+    missing = sorted(
+        ((media_id, score) for media_id, score in coverage.items() if media_id not in by_media),
+        key=lambda pair: pair[1],
+        reverse=True,
+    )[: max(limit * 4, 60)]
     if missing:
-        for media_id, row in db.first_items_for_media(missing).items():
+        for media_id, row in db.first_items_for_media([pair[0] for pair in missing]).items():
             if kind in ("image", "video") and row["kind"] != kind:
                 continue
             by_media[media_id] = _entry(int(row["item_id"]), media_id, row, 0.0)
