@@ -119,9 +119,10 @@ def api_search(
     q: str = Query(..., min_length=1, max_length=500),
     limit: int = Query(config.DEFAULT_LIMIT, ge=1, le=200),
     kind: str | None = Query(None, pattern="^(image|video)$"),
+    all: bool = Query(False, description="Include weak matches below the confidence cutoff"),
 ) -> dict[str, Any]:
     _require_ready()
-    return search_mod.search(q, limit=limit, kind=kind, index=manager.index)
+    return search_mod.search(q, limit=limit, kind=kind, index=manager.index, show_all=all)
 
 
 @app.get("/api/recent")

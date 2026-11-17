@@ -93,17 +93,30 @@ def cmd_search(args: argparse.Namespace) -> int:
     query = " ".join(args.query)
     from .search import search
 
-    result = search(query, limit=args.limit, kind=args.kind, index=index, embedder=embedder)
+    result = search(
+        query,
+        limit=args.limit,
+        kind=args.kind,
+        index=index,
+        embedder=embedder,
+        show_all=args.all,
+    )
     if args.json:
         print(json.dumps(result, indent=2))
         return 0
     if not result["results"]:
         print("no results")
         return 1
-    print(f'{len(result["results"])} results in {result["took_ms"]:.1f} ms  ({query})')
+    if result["weak_only"]:
+        print("no strong match; showing best guesses")
+    summary = f'{len(result["results"])} shown'
+    if not args.all:
+        summary += f' · {result["strong_count"]} strong · {result["weak_count"]} weak hidden'
+    print(f'{summary} in {result["took_ms"]:.1f} ms  ({query})')
     for n, item in enumerate(result["results"], 1):
         stamp = f" {_fmt_duration(item['t'])}" if item["kind"] == "video" else ""
-        print(f"{n:3d}. {item['score']:.3f}  {item['kind']:<5}{stamp:<11} {item['path']}")
+        mark = "" if item["strong"] else "  (weak)"
+        print(f"{n:3d}. {item['score']:.3f}{mark:<8} {item['kind']:<5}{stamp:<11} {item['path']}")
         for moment in item["moments"][1:]:
             print(f"       also {moment['score']:.3f}  {moment['t']}s")
     print(
@@ -172,6 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("query", nargs="+")
     p.add_argument("-n", "--limit", type=int, default=20)
     p.add_argument("--kind", choices=["image", "video"], default=None)
+    p.add_argument("--all", action="store_true", help="include weak matches below the confidence cutoff")
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_search)
 
