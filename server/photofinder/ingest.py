@@ -31,7 +31,7 @@ try:  # iPhone / AVIF support when the optional decoder is installed
 except Exception:  # pragma: no cover - Pillow handles the formats it knows
     pass
 
-from . import config, db
+from . import config, db, ocr
 from .embedder import ClipEmbedder, get_embedder
 from .index import VectorIndex, get_index
 
@@ -284,7 +284,7 @@ class IngestManager:
 
         self._ensure_index()
         seen: set[str] = set()
-        batch: list[tuple[Path, os.stat_result, Image.Image, int, int, str | None]] = []
+        batch: list[tuple[Path, os.stat_result, Image.Image, int, int, str | None, str | None]] = []
         stop_scan = False
 
         for path in files:
@@ -312,7 +312,7 @@ class IngestManager:
                     self._record_error(path, st, f"image: {type(exc).__name__}: {exc}")
                     self._bump(done=1, errors=1)
                     continue
-                batch.append((path, st, image, width, height, taken))
+                batch.append((path, st, image, width, height, taken, ocr.extract(path)))
                 if len(batch) >= config.EMBED_BATCH:
                     self._flush_images(batch)
                     batch = []
@@ -337,7 +337,7 @@ class IngestManager:
 
     # -- images --------------------------------------------------------------
 
-    def _flush_images(self, batch: list[tuple[Path, os.stat_result, Image.Image, int, int, str | None]]) -> None:
+    def _flush_images(self, batch: list[tuple[Path, os.stat_result, Image.Image, int, int, str | None, str | None]]) -> None:
         if not batch:
             return
         self._update(state="indexing", phase="embedding")
@@ -348,7 +348,7 @@ class IngestManager:
                 self._record_error(path, st, f"embed: {type(exc).__name__}: {exc}")
             self._bump(done=len(batch), errors=len(batch))
             return
-        for (path, st, image, width, height, taken), vector in zip(batch, vectors):
+        for (path, st, image, width, height, taken, text), vector in zip(batch, vectors):
             try:
                 media_id = db.upsert_media(
                     path=str(path),
@@ -360,6 +360,7 @@ class IngestManager:
                     duration=None,
                     taken_at=taken,
                 )
+                db.set_ocr_text(media_id, text)
                 old = db.delete_items_for_media(media_id)
                 if old:
                     self._ensure_index().remove(old)
@@ -517,6 +518,10 @@ class IngestManager:
             return False
         row = db.media_by_path(path)
         if row is None:
+            return False
+        # When OCR becomes available after a library was indexed, images are
+        # reprocessed once to pick up their text (NULL means "not OCR'd yet").
+        if row["kind"] == "image" and row["ocr_text"] is None and ocr.available():
             return False
         return (
             row["status"] == "ready"

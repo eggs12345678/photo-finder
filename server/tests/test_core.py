@@ -9,7 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from photofinder import db
+from photofinder import db, ocr
 from photofinder.index import VectorIndex
 from photofinder.search import search
 
@@ -81,6 +81,7 @@ def test_search_groups_video_moments_and_sorts_them(library):
         "faiss_ms",
         "calibrate_ms",
         "db_ms",
+        "lexical_ms",
         "group_ms",
     }
     assert result["took_ms"] >= 0
@@ -297,3 +298,78 @@ def test_flat_distribution_is_not_all_strong(tmp_path):
     finally:
         db.clear_library()
         index.reset(4)
+
+
+def test_ocr_text_surfaces_a_poor_visual_match(crowded_library):
+    row = db.media_by_path("C:/crowd/01.jpg")
+    db.set_ocr_text(int(row["id"]), "discord chat")
+
+    result = search("discord chat", limit=10, index=crowded_library, embedder=EnsembleEmbedder())
+
+    assert result["text_matches"] == 1
+    assert [item["path"] for item in result["results"]] == [
+        "C:/crowd/00.jpg",
+        "C:/crowd/01.jpg",
+    ]
+    match = result["results"][1]
+    assert match["text_score"] == 1.0
+    assert match["strong"] is True
+
+
+def test_common_words_do_not_count_as_text_matches(crowded_library):
+    for n in range(10):
+        row = db.media_by_path(f"C:/crowd/{n:02d}.jpg")
+        db.set_ocr_text(int(row["id"]), "the the the")
+
+    result = search("the", limit=10, index=crowded_library, embedder=EnsembleEmbedder())
+
+    assert result["text_matches"] == 0
+    assert all(item["text_score"] == 0 for item in result["results"])
+
+
+def test_text_match_outside_the_clip_candidates_is_found(tmp_path):
+    """A literal word match must not be lost when FAISS never returns it."""
+    db.init()
+    db.clear_library()
+    index = VectorIndex(path=tmp_path / "ocr.faiss", dim=4)
+    index.reset(4)
+
+    strong = unit(1.0, 1.0, 0.0, 0.0)
+    weak = unit(-1.0, 1.0, 0.0, 0.0)
+    target = unit(0.0, 0.0, 0.0, 1.0)
+
+    def add(name: str, vector: np.ndarray) -> int:
+        media_id = db.upsert_media(
+            path=name,
+            kind="image",
+            size=10,
+            mtime=1.0,
+            width=100,
+            height=100,
+            duration=None,
+            taken_at=None,
+        )
+        ids = db.add_items(media_id, [{"t": None, "thumb": "x.jpg", "vector": vector.tobytes()}])
+        index.add(ids, np.stack([vector]))
+        return media_id
+
+    try:
+        for n in range(250):
+            add(f"C:/ocr/strong{n}.jpg", strong)
+        for n in range(49):
+            add(f"C:/ocr/weak{n}.jpg", weak)
+        target_id = add("C:/ocr/target.jpg", target)
+        db.set_ocr_text(target_id, "quarterly budget review")
+
+        result = search("quarterly budget review", limit=10, index=index, embedder=EnsembleEmbedder())
+
+        assert [item["path"] for item in result["results"]] == ["C:/ocr/target.jpg"]
+        assert result["results"][0]["text_score"] == 1.0
+        assert result["results"][0]["strong"] is True
+    finally:
+        db.clear_library()
+        index.reset(4)
+
+
+def test_ocr_tokenizer_keeps_words_and_numbers():
+    assert ocr.tokens("AP Biology 101: chapter-2!") == ["ap", "biology", "101", "chapter", "2"]

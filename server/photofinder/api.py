@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, db, search as search_mod
+from . import config, db, ocr, search as search_mod
 from .bootstrap import open_library
 from .embedder import get_embedder
 from .ingest import IngestManager
@@ -85,6 +85,11 @@ def health() -> dict[str, Any]:
         stats = db.stats()
     except Exception:
         pass
+    text = {"engine": None, "error": None, "documents": 0, "processed": 0}
+    try:
+        text = {**ocr.status(), **db.ocr_stats()}
+    except Exception:
+        pass
     return {
         "ok": BOOT["state"] == "ready",
         "boot": BOOT["state"],
@@ -94,6 +99,7 @@ def health() -> dict[str, Any]:
         "dim": manager.index.dim if manager.index else None,
         "vectors": manager.index.count if manager.index else 0,
         "library": stats,
+        "ocr": text,
         "data_dir": str(config.DATA_DIR),
     }
 

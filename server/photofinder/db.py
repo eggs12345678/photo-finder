@@ -8,6 +8,7 @@ after deletions.
 from __future__ import annotations
 
 import numpy as np
+import math
 import os
 import sqlite3
 import threading
@@ -40,7 +41,8 @@ CREATE TABLE IF NOT EXISTS media (
     taken_at  TEXT,
     status    TEXT NOT NULL DEFAULT 'ready',
     error     TEXT,
-    indexed_at TEXT
+    indexed_at TEXT,
+    ocr_text  TEXT
 );
 CREATE TABLE IF NOT EXISTS items (
     id       INTEGER PRIMARY KEY,
@@ -51,6 +53,12 @@ CREATE TABLE IF NOT EXISTS items (
 );
 CREATE INDEX IF NOT EXISTS idx_items_media ON items(media_id);
 CREATE INDEX IF NOT EXISTS idx_media_status ON media(status);
+CREATE VIRTUAL TABLE IF NOT EXISTS ocr_fts USING fts5(
+    text,
+    media_id UNINDEXED,
+    tokenize='unicode61'
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS ocr_vocab USING fts5vocab(ocr_fts, 'row');
 """
 
 
@@ -78,6 +86,9 @@ def init() -> None:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(items)")}
     if "vector" not in columns:
         conn.execute("ALTER TABLE items ADD COLUMN vector BLOB")
+    media_columns = {row["name"] for row in conn.execute("PRAGMA table_info(media)")}
+    if "ocr_text" not in media_columns:
+        conn.execute("ALTER TABLE media ADD COLUMN ocr_text TEXT")
     conn.commit()
 
 
@@ -180,6 +191,7 @@ def delete_items_for_media(media_id: int) -> list[int]:
 def delete_media(media_id: int) -> list[int]:
     ids = delete_items_for_media(media_id)
     conn = connect()
+    conn.execute("DELETE FROM ocr_fts WHERE media_id=?", (media_id,))
     conn.execute("DELETE FROM media WHERE id=?", (media_id,))
     conn.commit()
     return ids
@@ -261,12 +273,92 @@ def items_with_media(ids: list[int]) -> dict[int, sqlite3.Row]:
     marks = ",".join("?" * len(ids))
     rows = conn.execute(
         "SELECT i.id AS item_id, i.t, i.thumb, m.id AS media_id, m.path, m.kind, "
-        "m.width, m.height, m.duration, m.taken_at, m.mtime "
+        "m.width, m.height, m.duration, m.taken_at, m.mtime, m.ocr_text "
         f"FROM items i JOIN media m ON m.id=i.media_id "
         f"WHERE i.id IN ({marks}) AND m.status='ready'",
         ids,
     ).fetchall()
     return {int(r["item_id"]): r for r in rows}
+
+
+def first_items_for_media(media_ids: list[int]) -> dict[int, sqlite3.Row]:
+    """One representative item per media, for hits found through OCR text."""
+    if not media_ids:
+        return {}
+    marks = ",".join("?" * len(media_ids))
+    rows = connect().execute(
+        "SELECT i.id AS item_id, i.t, i.thumb, m.id AS media_id, m.path, m.kind, "
+        "m.width, m.height, m.duration, m.taken_at, m.mtime, m.ocr_text "
+        "FROM items i JOIN media m ON m.id=i.media_id "
+        f"WHERE i.id IN (SELECT MIN(id) FROM items WHERE media_id IN ({marks}) GROUP BY media_id) "
+        "AND m.status='ready'",
+        media_ids,
+    ).fetchall()
+    return {int(r["media_id"]): r for r in rows}
+
+
+# --- OCR text ---------------------------------------------------------------
+
+def set_ocr_text(media_id: int, text: str | None) -> None:
+    """Store the text found in a media file ("" means "processed, no text").
+
+    Passing None leaves the column untouched, so indexing without an OCR
+    engine never erases text that is already there.
+    """
+    if text is None:
+        return
+    conn = connect()
+    conn.execute("DELETE FROM ocr_fts WHERE media_id=?", (media_id,))
+    conn.execute("UPDATE media SET ocr_text=? WHERE id=?", (text, media_id))
+    if text:
+        conn.execute(
+            "INSERT INTO ocr_fts(text, media_id) VALUES(?,?)",
+            (text, media_id),
+        )
+    conn.commit()
+
+
+def ocr_postings(tokens: list[str]) -> tuple[dict[str, set[int]], dict[str, float], int]:
+    """Inverted index for OCR text: token -> media ids, with IDF weights.
+
+    Tokens that appear in more than ``OCR_STOPWORD_RATIO`` of the documents are
+    dropped, both from the numerator and the denominator, so a query made of
+    common words cannot look like a perfect text match.
+    """
+    conn = connect()
+    total = int(conn.execute("SELECT COUNT(*) AS n FROM ocr_fts").fetchone()["n"])
+    if not total or not tokens:
+        return {}, {}, total
+    marks = ",".join("?" * len(tokens))
+    counts = {
+        row["term"]: int(row["doc"])
+        for row in conn.execute(
+            f"SELECT term, doc FROM ocr_vocab WHERE term IN ({marks})", tokens
+        )
+    }
+    limit = max(1.0, config.OCR_STOPWORD_RATIO * total)
+    if total < 8:
+        # With a handful of documents, "common" is meaningless; keep every word.
+        kept = list(tokens)
+    else:
+        kept = [token for token in tokens if counts.get(token, 0) < limit]
+    postings: dict[str, set[int]] = {}
+    for token in kept:
+        rows = conn.execute(
+            "SELECT media_id FROM ocr_fts WHERE ocr_fts MATCH ?", (f'"{token}"',)
+        ).fetchall()
+        postings[token] = {int(row["media_id"]) for row in rows}
+    idf = {token: math.log(1 + total / (1 + counts.get(token, 0))) for token in kept}
+    return postings, idf, total
+
+
+def ocr_stats() -> dict[str, int]:
+    conn = connect()
+    documents = conn.execute("SELECT COUNT(*) AS n FROM ocr_fts").fetchone()["n"]
+    processed = conn.execute(
+        "SELECT COUNT(*) AS n FROM media WHERE ocr_text IS NOT NULL"
+    ).fetchone()["n"]
+    return {"documents": int(documents), "processed": int(processed)}
 
 
 def thumb_for_item(item_id: int) -> str | None:
@@ -280,6 +372,7 @@ def media_by_id(media_id: int) -> sqlite3.Row | None:
 
 def clear_library() -> None:
     conn = connect()
+    conn.execute("DELETE FROM ocr_fts")
     conn.execute("DELETE FROM items")
     conn.execute("DELETE FROM media")
     conn.commit()
