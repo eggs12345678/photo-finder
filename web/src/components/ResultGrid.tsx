@@ -32,7 +32,7 @@ function Tile({
   return (
     <button
       type="button"
-      className={`tile ${selected ? "is-selected" : ""}`}
+      className={`tile ${selected ? "is-selected" : ""} ${item.strong === false ? "is-weak" : ""}`}
       data-index={index}
       data-selected={selected || undefined}
       aria-label={`${item.name}${isVideo ? `, clip at ${formatTime(item.t)}` : ""}`}

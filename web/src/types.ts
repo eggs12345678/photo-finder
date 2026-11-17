@@ -17,6 +17,7 @@ export interface MediaItem {
   t: number | null;
   duration: number | null;
   score?: number;
+  strong?: boolean;
   thumb: string;
   media_url: string;
   width?: number | null;
@@ -29,6 +30,7 @@ export interface MediaItem {
 export interface SearchTimings {
   embed_ms: number;
   faiss_ms: number;
+  calibrate_ms: number;
   db_ms: number;
   group_ms: number;
 }
@@ -37,6 +39,12 @@ export interface SearchResponse {
   query: string;
   results: MediaItem[];
   candidates: number;
+  strong_count: number;
+  weak_count: number;
+  weak_only: boolean;
+  cutoff: number | null;
+  cutoff_z: number | null;
+  show_all: boolean;
   took_ms: number;
   timings: SearchTimings;
 }

@@ -30,9 +30,16 @@ export const api = {
 
   status: () => request<StatusResponse>("/api/status"),
 
-  search: (query: string, kind: KindFilter, limit = 60, signal?: AbortSignal) => {
+  search: (
+    query: string,
+    kind: KindFilter,
+    limit = 60,
+    showAll = false,
+    signal?: AbortSignal,
+  ) => {
     const params = new URLSearchParams({ q: query, limit: String(limit) });
     if (kind !== "all") params.set("kind", kind);
+    if (showAll) params.set("all", "true");
     return request<SearchResponse>(`/api/search?${params}`, { signal });
   },
 

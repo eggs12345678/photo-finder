@@ -41,6 +41,7 @@ export default function App() {
   const [results, setResults] = useState<MediaItem[]>([]);
   const [recent, setRecent] = useState<MediaItem[]>([]);
   const [meta, setMeta] = useState<SearchResponse | null>(null);
+  const [showAll, setShowAll] = useState(false);
   const [loading, setLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
@@ -147,6 +148,11 @@ export default function App() {
     return () => window.clearTimeout(id);
   }, [query]);
 
+  // A new query or type filter starts strict again.
+  useEffect(() => {
+    setShowAll(false);
+  }, [debounced, kind]);
+
   useEffect(() => {
     const q = debounced.trim();
     if (!q) {
@@ -161,7 +167,7 @@ export default function App() {
     setLoading(true);
     window.scrollTo({ top: 0, behavior: "auto" });
     api
-      .search(q, kind, 60, controller.signal)
+      .search(q, kind, 60, showAll, controller.signal)
       .then((response) => {
         setResults(response.results);
         setMeta(response);
@@ -176,7 +182,7 @@ export default function App() {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [debounced, kind, booted, refreshNonce]);
+  }, [debounced, kind, showAll, booted, refreshNonce]);
 
   // --- recent ---------------------------------------------------------------
   useEffect(() => {
@@ -541,8 +547,27 @@ export default function App() {
                   <span className="result-count">
                     {loading && results.length === 0
                       ? "Searching…"
-                      : `${results.length} ${results.length === 1 ? "match" : "matches"}`}
+                      : !meta
+                        ? `${results.length} ${results.length === 1 ? "match" : "matches"}`
+                        : showAll
+                          ? `${results.length} matches · ${meta.weak_count} weak`
+                          : meta.weak_only
+                            ? "No strong match"
+                            : `${meta.strong_count} strong ${
+                                meta.strong_count === 1 ? "match" : "matches"
+                              }`}
                   </span>
+                  {meta && meta.weak_count > 0 && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => setShowAll((value) => !value)}
+                    >
+                      {showAll
+                        ? "Strong only"
+                        : `Show all ${meta.strong_count + meta.weak_count}`}
+                    </button>
+                  )}
                   {latency != null && (
                     <span className="latency" title={meta ? `embed ${meta.timings.embed_ms} ms · faiss ${meta.timings.faiss_ms} ms · db ${meta.timings.db_ms} ms` : undefined}>
                       {latency < 10 ? latency.toFixed(1) : Math.round(latency)} ms
@@ -561,6 +586,16 @@ export default function App() {
             <div className="notice notice-error wide">
               <AlertIcon size={15} />
               <span>{searchError}</span>
+            </div>
+          )}
+
+          {searching && meta?.weak_only && !showAll && !searchError && (
+            <div className="notice notice-weak wide">
+              <AlertIcon size={15} />
+              <span>
+                Nothing clears the confidence bar. These {results.length} are the closest guesses —
+                try different words before trusting them.
+              </span>
             </div>
           )}
 
