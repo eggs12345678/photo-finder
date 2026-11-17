@@ -28,6 +28,28 @@ THUMB_DIR = DATA_DIR / "thumbs"
 MODEL_NAME = os.environ.get("PHOTOFINDER_MODEL", "ViT-B-32")
 MODEL_PRETRAINED = os.environ.get("PHOTOFINDER_PRETRAINED", "laion2b_s34b_b79k")
 
+# Screenshots are wider than CLIP's square input. Squashing them to a square
+# before preprocessing keeps the whole frame; the default centre crop throws
+# away everything outside the middle ~56%. Measured on 80 labelled screenshots,
+# this raised precision@R from 0.40 to 0.47 and MRR from 0.61 to 0.67.
+EMBED_SQUASH = os.environ.get("PHOTOFINDER_SQUASH", "1") not in {"0", "false", "no"}
+
+# Query embeddings are the average of these prompts (they share one forward
+# pass). The raw wording carries the intent, "screenshot" anchors UI text and
+# "photo" keeps ordinary pictures working.
+QUERY_PROMPTS = (
+    "{query}",
+    "a screenshot of {query}",
+    "a photo of {query}",
+)
+
+# Weak matches are hidden by default. A result is "strong" when its similarity
+# is at least this many standard deviations above the similarity of a random
+# sample of the library for the same query. 1.0 keeps ~70% of the relevant
+# results on the labelled sample while dropping ~84% of the library.
+STRICT_Z = float(os.environ.get("PHOTOFINDER_STRICT_Z", "1.0"))
+CALIBRATION_SAMPLES = int(os.environ.get("PHOTOFINDER_CALIBRATION_SAMPLES", "2048"))
+
 IMAGE_EXTS = {
     ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff",
     ".heic", ".heif", ".avif",

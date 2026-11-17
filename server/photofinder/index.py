@@ -24,6 +24,8 @@ class VectorIndex:
         self.dim = dim
         self._index = None
         self._lock = threading.RLock()
+        # Bumped whenever vectors change, so cached calibration invalidates.
+        self.version = 0
         self._load_or_create()
 
     def _new(self):
@@ -49,6 +51,7 @@ class VectorIndex:
             if dim:
                 self.dim = dim
             self._index = self._new()
+            self.version += 1
             self.save()
 
     def rebuild(self, rows: Iterable[tuple[int, bytes]], dim: int | None = None) -> int:
@@ -79,6 +82,7 @@ class VectorIndex:
                     np.asarray(ids, dtype=np.int64),
                 )
                 total += len(ids)
+            self.version += 1
             self.save()
             return total
 
@@ -97,6 +101,7 @@ class VectorIndex:
                 np.ascontiguousarray(vectors, dtype=np.float32),
                 np.asarray(ids, dtype=np.int64),
             )
+            self.version += 1
 
     def remove(self, ids: list[int]) -> None:
         if not ids:
@@ -106,6 +111,7 @@ class VectorIndex:
         with self._lock:
             selector = faiss.IDSelectorBatch(np.asarray(ids, dtype=np.int64))
             self._index.remove_ids(selector)
+            self.version += 1
 
     def search(self, vector: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
         with self._lock:

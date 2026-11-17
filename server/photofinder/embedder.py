@@ -32,6 +32,8 @@ class ClipEmbedder:
         self._load_lock = threading.Lock()
         self._infer_lock = threading.Lock()
         self._text_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+        self._query_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+        self.input_size = 224
         self.dim = 512
 
     # -- lifecycle -----------------------------------------------------------
@@ -58,6 +60,10 @@ class ClipEmbedder:
             with torch.inference_mode():
                 probe = model.encode_text(tokenizer(["warmup"]).to(self.device))
             self.dim = int(probe.shape[-1])
+            size = getattr(getattr(model, "visual", None), "image_size", 224)
+            if isinstance(size, (tuple, list)):
+                size = max(int(part) for part in size)
+            self.input_size = int(size) or 224
             self._model = model
             self._preprocess = preprocess
             self._tokenizer = tokenizer
@@ -77,35 +83,76 @@ class ClipEmbedder:
         self.load()
         import torch
 
-        tensors = torch.stack(
-            [self._preprocess(img.convert("RGB")) for img in images]
-        ).to(self.device)
+        tensors = torch.stack([self._prepare(img) for img in images]).to(self.device)
         with self._infer_lock, torch.inference_mode():
             feats = self._model.encode_image(tensors)
         return self._normalise(feats.detach().cpu().numpy())
 
-    def embed_text(self, text: str) -> np.ndarray:
-        """Embed one query -> (dim,) float32, normalised. Cached (LRU)."""
-        key = text.strip().lower()
-        cached = self._text_cache.get(key)
-        if cached is not None:
-            self._text_cache.move_to_end(key)
-            return cached
-        self.load()
-        import torch
+    def _prepare(self, image: Image.Image):
+        """Preprocess one image, keeping the whole frame for wide screenshots.
 
-        tokens = self._tokenizer([text.strip()]).to(self.device)
-        with self._infer_lock, torch.inference_mode():
-            feats = self._model.encode_text(tokens)
-        vec = self._normalise(feats.detach().cpu().numpy())[0]
-        self._text_cache[key] = vec
-        if len(self._text_cache) > 512:
-            self._text_cache.popitem(last=False)
-        return vec
+        CLIP's default transform resizes the short side and then centre-crops a
+        square, which discards the left and right of a 16:9 screenshot. Resizing
+        to the model's square input first keeps every pixel (with a mild
+        horizontal squeeze), which measured better than cropping or padding.
+        """
+        image = image.convert("RGB")
+        if config.EMBED_SQUASH:
+            size = (self.input_size, self.input_size)
+            if image.size != size:
+                image = image.resize(size, Image.Resampling.BICUBIC)
+        return self._preprocess(image)
+
+    def embed_texts(self, texts: list[str]) -> np.ndarray:
+        """Embed several strings in one forward pass -> (n, dim), normalised."""
+        if not texts:
+            return np.zeros((0, self.dim), dtype=np.float32)
+        keys = [text.strip().lower() for text in texts]
+        missing = [k for k in keys if k not in self._text_cache]
+        if missing:
+            self.load()
+            import torch
+
+            tokens = self._tokenizer([k for k in missing]).to(self.device)
+            with self._infer_lock, torch.inference_mode():
+                feats = self._model.encode_text(tokens)
+            vectors = self._normalise(feats.detach().cpu().numpy())
+            for key, vector in zip(missing, vectors):
+                self._text_cache[key] = vector
+                self._text_cache.move_to_end(key)
+            while len(self._text_cache) > 512:
+                self._text_cache.popitem(last=False)
+        return np.stack([self._text_cache[k] for k in keys])
+
+    def embed_text(self, text: str) -> np.ndarray:
+        """Embed one string -> (dim,) float32, normalised. Cached (LRU)."""
+        return self.embed_texts([text])[0]
+
+    def embed_query(self, query: str) -> np.ndarray:
+        """Embed a search query as the average of the configured prompts.
+
+        Averaging a few paraphrases is less sensitive to wording than a single
+        prompt and shares one tokenizer pass, so it costs about the same.
+        """
+        query = query.strip()
+        key = query.lower()
+        cached = self._query_cache.get(key)
+        if cached is not None:
+            self._query_cache.move_to_end(key)
+            return cached
+        prompts = [template.format(query=query) for template in config.QUERY_PROMPTS]
+        vectors = self.embed_texts(prompts).mean(axis=0)
+        norm = float(np.linalg.norm(vectors)) or 1.0
+        vector = np.ascontiguousarray(vectors / norm, dtype=np.float32)
+        self._query_cache[key] = vector
+        self._query_cache.move_to_end(key)
+        while len(self._query_cache) > 512:
+            self._query_cache.popitem(last=False)
+        return vector
 
     def warmup(self) -> None:
         self.load()
-        self.embed_text("warmup")
+        self.embed_query("warmup")
 
 
 _shared: ClipEmbedder | None = None

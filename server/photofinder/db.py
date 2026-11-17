@@ -7,6 +7,7 @@ after deletions.
 
 from __future__ import annotations
 
+import numpy as np
 import os
 import sqlite3
 import threading
@@ -98,7 +99,11 @@ def set_meta(key: str, value: str) -> None:
 
 
 def fingerprint() -> str:
-    return f"{config.MODEL_NAME}/{config.MODEL_PRETRAINED}"
+    # The preprocessing is part of the embedding space: changing between CLIP's
+    # centre crop and the full-frame squash makes old vectors incomparable, so
+    # it must force a re-index just like a model change.
+    preprocess = "squash" if config.EMBED_SQUASH else "crop"
+    return f"{config.MODEL_NAME}/{config.MODEL_PRETRAINED}/{preprocess}"
 
 
 # --- roots ------------------------------------------------------------------
@@ -229,6 +234,24 @@ def iter_vectors() -> Iterable[tuple[int, bytes]]:
     cursor = connect().execute("SELECT id, vector FROM items WHERE vector IS NOT NULL ORDER BY id")
     for row in cursor:
         yield int(row["id"]), row["vector"]
+
+
+def sample_vectors(limit: int = 2048) -> np.ndarray:
+    """A random spread of stored vectors, used to calibrate confidence.
+
+    Ordering by RANDOM() is fine here: it runs once per index version over an
+    indexed table, and 2048 rows is a few milliseconds even at a million items.
+    """
+    rows = connect().execute(
+        "SELECT vector FROM items WHERE vector IS NOT NULL ORDER BY RANDOM() LIMIT ?",
+        (int(limit),),
+    ).fetchall()
+    if not rows:
+        return np.zeros((0, 0), dtype=np.float32)
+    vectors = [np.frombuffer(row["vector"], dtype=np.float32) for row in rows]
+    width = vectors[0].size
+    vectors = [v for v in vectors if v.size == width]
+    return np.stack(vectors)
 
 
 def items_with_media(ids: list[int]) -> dict[int, sqlite3.Row]:
