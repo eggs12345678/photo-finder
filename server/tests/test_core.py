@@ -263,3 +263,37 @@ def test_weak_only_returns_a_few_guesses(crowded_library, monkeypatch):
     assert result["weak_only"] is True
     assert len(result["results"]) == 3
     assert all(item["strong"] is False for item in result["results"])
+
+
+def test_flat_distribution_is_not_all_strong(tmp_path):
+    """Copies of one image have zero spread; nothing should look confident."""
+    db.init()
+    db.clear_library()
+    index = VectorIndex(path=tmp_path / "flat.faiss", dim=4)
+    index.reset(4)
+
+    vector = unit(0.3, np.sqrt(1 - 0.09), 0.0, 0.0)
+    for n in range(20):
+        media_id = db.upsert_media(
+            path=f"C:/flat/{n:02d}.jpg",
+            kind="image",
+            size=10,
+            mtime=1.0,
+            width=100,
+            height=100,
+            duration=None,
+            taken_at=None,
+        )
+        ids = db.add_items(
+            media_id, [{"t": None, "thumb": f"f{n}.jpg", "vector": vector.tobytes()}]
+        )
+        index.add(ids, np.stack([vector]))
+
+    try:
+        result = search("beach", limit=10, index=index, embedder=EnsembleEmbedder())
+        assert result["strong_count"] == 0
+        assert result["weak_only"] is True
+        assert len(result["results"]) == 3
+    finally:
+        db.clear_library()
+        index.reset(4)

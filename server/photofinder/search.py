@@ -69,7 +69,9 @@ def _cutoff(sample: np.ndarray, vector: np.ndarray) -> tuple[float | None, float
     mean = float(scores.mean())
     std = float(scores.std())
     if std <= 1e-6:
-        return mean, config.STRICT_Z
+        # No spread means nothing stands out (for example a library of copies),
+        # so fail closed instead of calling every result strong.
+        return float(scores.max()) + 1.0, config.STRICT_Z
     return mean + config.STRICT_Z * std, config.STRICT_Z
 
 
