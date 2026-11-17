@@ -18,6 +18,7 @@ export interface MediaItem {
   duration: number | null;
   score?: number;
   strong?: boolean;
+  text_score?: number;
   thumb: string;
   media_url: string;
   width?: number | null;
@@ -31,6 +32,7 @@ export interface SearchTimings {
   embed_ms: number;
   faiss_ms: number;
   calibrate_ms: number;
+  lexical_ms: number;
   db_ms: number;
   group_ms: number;
 }
@@ -73,6 +75,12 @@ export interface Health {
   pretrained: string;
   dim: number | null;
   vectors: number;
+  ocr?: {
+    engine: string | null;
+    error?: string | null;
+    documents?: number;
+    processed?: number;
+  };
   data_dir: string;
 }
 

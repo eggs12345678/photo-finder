@@ -750,6 +750,13 @@ button.status-chip {
   color: var(--accent);
 }
 
+.badge-text {
+  left: 8px;
+  right: auto;
+  color: var(--accent);
+  border-color: rgba(216, 240, 90, 0.32);
+}
+
 .tile-play {
   position: absolute;
   top: 8px;

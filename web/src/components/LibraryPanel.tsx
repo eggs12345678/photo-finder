@@ -255,6 +255,13 @@ export function LibraryPanel({
                 <dd className="mono">{compact(health?.vectors ?? 0)}</dd>
               </div>
               <div>
+                <dt>Text search</dt>
+                <dd className="mono">
+                  {health?.ocr?.engine ?? "off"}
+                  {health?.ocr?.documents ? ` · ${compact(health.ocr.documents)}` : ""}
+                </dd>
+              </div>
+              <div>
                 <dt>Media size</dt>
                 <dd className="mono">{formatBytes(stats?.bytes ?? 0)}</dd>
               </div>

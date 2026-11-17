@@ -569,7 +569,7 @@ export default function App() {
                     </button>
                   )}
                   {latency != null && (
-                    <span className="latency" title={meta ? `embed ${meta.timings.embed_ms} ms · faiss ${meta.timings.faiss_ms} ms · db ${meta.timings.db_ms} ms` : undefined}>
+                    <span className="latency" title={meta ? `embed ${meta.timings.embed_ms} ms · faiss ${meta.timings.faiss_ms} ms · text ${meta.timings.lexical_ms} ms · db ${meta.timings.db_ms} ms` : undefined}>
                       {latency < 10 ? latency.toFixed(1) : Math.round(latency)} ms
                     </span>
                   )}

@@ -73,6 +73,15 @@ function Tile({
           {item.t != null && item.t > 0 && <em>· {formatTime(item.t)}</em>}
         </span>
       )}
+
+      {(item.text_score ?? 0) >= 0.6 && (
+        <span
+          className="badge badge-text"
+          title={`${Math.round((item.text_score ?? 0) * 100)}% of the query words appear in this image's text`}
+        >
+          text
+        </span>
+      )}
     </button>
   );
 }
