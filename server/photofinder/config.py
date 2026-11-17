@@ -50,6 +50,25 @@ QUERY_PROMPTS = (
 STRICT_Z = float(os.environ.get("PHOTOFINDER_STRICT_Z", "1.0"))
 CALIBRATION_SAMPLES = int(os.environ.get("PHOTOFINDER_CALIBRATION_SAMPLES", "2048"))
 
+# On-screen text from screenshots. OCR is optional: "auto" uses the Windows
+# engine (winsdk) or RapidOCR/Tesseract when installed, "off" disables both the
+# text pass and text search, or name an engine explicitly.
+OCR_MODE = os.environ.get("PHOTOFINDER_OCR", "auto").strip().lower()
+OCR_LANGUAGE = os.environ.get("PHOTOFINDER_OCR_LANG", "en-US")
+OCR_MAX_SIDE = int(os.environ.get("PHOTOFINDER_OCR_MAX_SIDE", "2600"))
+OCR_MAX_CHARS = int(os.environ.get("PHOTOFINDER_OCR_MAX_CHARS", "4000"))
+OCR_MAX_TOKENS = 16
+# A query token that appears in more than this share of OCR documents is
+# treated as a stopword for text matching ("the", "and", ...).
+OCR_STOPWORD_RATIO = 0.5
+# Text evidence is scaled into the same similarity range as CLIP: full coverage
+# of the query words scores this high. On the labelled sample, max(CLIP,
+# 0.4 * coverage) took literal-text queries from MRR 0.40 to 1.00 while leaving
+# conceptual queries unchanged.
+OCR_BOOST = float(os.environ.get("PHOTOFINDER_OCR_BOOST", "0.4"))
+# Coverage at which a text match is strong even when CLIP disagrees.
+OCR_STRONG_COVERAGE = float(os.environ.get("PHOTOFINDER_OCR_STRONG_COVERAGE", "0.8"))
+
 IMAGE_EXTS = {
     ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff",
     ".heic", ".heif", ".avif",
