@@ -88,9 +88,10 @@ Use the drawer's **Rebuild** (or `index --full`) after changing
 
 ### Indexing
 
-1. **Photos** are loaded with EXIF orientation applied, resized for the model,
-   thumbnailed to 512 px, and embedded once. The thumbnail and the original
-   file are served separately.
+1. **Photos** are loaded with EXIF orientation applied, resized to the model's
+   square input (the full frame is kept — see *Precision* below), thumbnailed to
+   512 px, and embedded once. The thumbnail and the original file are served
+   separately.
 2. **Videos** are probed with `ffprobe` and sampled with ffmpeg — one frame
    every 2 seconds by default, capped at 300 frames per clip for long videos.
    Consecutive frames whose cosine similarity is above `0.982` are dropped, so
@@ -102,20 +103,49 @@ Use the drawer's **Rebuild** (or `index --full`) after changing
 4. The scanner is incremental: files whose size and mtime match are skipped,
    changed files are re-embedded atomically, and files that disappeared are
    removed from the index (their files are never touched).
-5. A model fingerprint (`model/pretrained`) is stored with the library. Change
-   the model and the app re-embeds everything automatically.
+5. A model fingerprint (`model/pretrained/preprocess`) is stored with the
+   library. Change the model or the preprocessing and the app re-embeds
+   everything automatically, because the old vectors are no longer comparable.
 
 ### Search
 
-1. The text query is embedded with the same CLIP model. Repeated queries hit a
-   small LRU vector cache.
+1. The text query is embedded with the same CLIP model as the average of three
+   prompts (`"{query}"`, `"a screenshot of {query}"`, `"a photo of {query}"`),
+   which shares one forward pass and is less sensitive to wording. Repeated
+   queries hit a small LRU vector cache.
 2. FAISS returns the top candidates by cosine similarity. The search
    over-fetches 12× the requested result count so that grouping many frames of
    the same video still fills the page.
 3. Candidates are grouped by file: one card per photo/clip, with up to four
    matching timestamps for videos.
-4. The response includes a timing breakdown (`embed`, `faiss`, `db`, `group`)
-   which the UI exposes in the latency pill.
+4. Each query is calibrated against a random sample of the library: a result is
+   **strong** when its similarity is at least `PHOTOFINDER_STRICT_Z` standard
+   deviations above the library's typical similarity for that query. Weak
+   matches are hidden by default; if nothing is strong, the three closest
+   guesses are shown with a warning.
+5. The response includes `strong_count`, `weak_count`, `weak_only`, `cutoff`,
+   and a timing breakdown (`embed`, `faiss`, `calibrate`, `db`, `group`) which
+   the UI exposes in the latency pill.
+
+### Precision
+
+The preprocessing and query settings were chosen on a labelled sample of 80
+screenshots and checked on held-out queries (tuning and held-out averages):
+
+| Setup | Precision@R | MRR |
+| --- | --- | --- |
+| CLIP centre crop, raw query (baseline) | 0.40 | 0.61 |
+| **Full-frame squash + three-prompt ensemble** | **0.50** | **0.68** |
+
+Centre-cropping a 16:9 screenshot throws away everything outside the middle
+~56%; resizing the whole frame to the model's square input keeps every pixel.
+The same idea was tested by padding, 2×2/3×3 tiling, `ViT-B-16`, and DataComp
+weights; none beat squash + ensemble consistently enough to justify their cost.
+The z-score gate keeps about 70% of relevant results while dropping about 84%
+of the library.
+
+Re-run `index --full` after changing preprocessing settings; the app also does
+this automatically when the fingerprint changes.
 
 On this machine, with 53 test moments: **p50 1.45 ms, p95 25 ms** across 40
 queries (the p95 comes from the first, uncached text encoding of each query).
@@ -135,6 +165,8 @@ A cached query is roughly `1–3 ms`. Flat FAISS search is a few milliseconds at
 - Filters: All / Photos / Clips. The library drawer (sliders icon) adds folders,
   shows live indexing progress, rescan/rebuild, and removes folders from the
   index without deleting files.
+- Search shows strong matches only. **Show all** includes weak ones (dimmed);
+  **Strong only** hides them again. A new query always starts strict.
 - Indexing runs in the background; search stays available.
 
 ## Configuration
@@ -151,6 +183,9 @@ Environment variables, read by the server and CLI:
 | `PHOTOFINDER_VIDEO_MAX_FRAMES` | `300` | Cap per clip (interval grows if needed) |
 | `PHOTOFINDER_VIDEO_DEDUPE` | `0.982` | Cosine above this = duplicate frame |
 | `PHOTOFINDER_BATCH` | `24` | Embedding batch size |
+| `PHOTOFINDER_SQUASH` | `1` | Keep the full frame when resizing (0 = CLIP centre crop) |
+| `PHOTOFINDER_STRICT_Z` | `1.0` | Standard deviations above library average to count as strong |
+| `PHOTOFINDER_CALIBRATION_SAMPLES` | `2048` | Library vectors sampled per query for the cutoff |
 | `PHOTOFINDER_FFMPEG` / `PHOTOFINDER_FFPROBE` | `ffmpeg` / `ffprobe` | Binary paths |
 
 Higher quality / slower alternative:
@@ -171,6 +206,7 @@ uv run python -m photofinder index "D:\Photos" "E:\Clips"   # incremental
 uv run python -m photofinder index "D:\Photos" --full       # re-embed everything
 uv run python -m photofinder search "a cat on a keyboard"
 uv run python -m photofinder search "sunset" --kind video -n 5 --json
+uv run python -m photofinder search "terminal with white text" --all   # include weak
 uv run python -m photofinder bench                          # latency percentiles
 uv run python -m photofinder stats
 uv run python -m photofinder serve --host 127.0.0.1 --port 8642
@@ -185,7 +221,7 @@ The API is local and unauthenticated by design (bind it to `127.0.0.1` only).
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /api/search?q=…&limit=60&kind=image\|video` | semantic search with timings |
+| `GET /api/search?q=…&limit=60&kind=image\|video&all=false` | semantic search with timings and strong/weak counts |
 | `GET /api/recent?limit=42&kind=…` | recently indexed media |
 | `GET /api/stats` | counts, roots, vectors, size |
 | `GET /api/health` | boot state, model, vector count |
@@ -266,7 +302,7 @@ server/
     embedder.py   CLIP image + text embeddings
     index.py      FAISS wrapper (add, remove, search, rebuild, atomic save)
     ingest.py     scanner, EXIF, thumbnails, video sampling, progress
-    search.py     query → grouped results with timings
+    search.py     query → confidence-gated, grouped results with timings
 web/
   src/
     App.tsx               search, keyboard model, polling, URL state
