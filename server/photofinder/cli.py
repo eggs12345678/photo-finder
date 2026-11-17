@@ -172,6 +172,18 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_desktop(args: argparse.Namespace) -> int:
+    from .desktop import run_desktop
+
+    return run_desktop(port=args.port)
+
+
+def cmd_stop(_: argparse.Namespace) -> int:
+    from .desktop import stop_server
+
+    return stop_server()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="photofinder", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -205,6 +217,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reload", action="store_true")
     p.add_argument("--log-level", default="info")
     p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser("desktop", help="start in the background, open the browser, show a tray icon")
+    p.add_argument("--port", type=int, default=None)
+    p.set_defaults(func=cmd_desktop)
+
+    p = sub.add_parser("stop", help="stop a desktop server started with 'desktop'")
+    p.set_defaults(func=cmd_stop)
     return parser
 
 

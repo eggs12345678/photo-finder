@@ -53,7 +53,7 @@ async def lifespan(_: FastAPI):
     manager.shutdown()
 
 
-app = FastAPI(title="photo-finder", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="photo-finder", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
